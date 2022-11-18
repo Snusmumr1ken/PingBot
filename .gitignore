@@ -4,8 +4,9 @@
 # idea
 .idea
 
-# Log file
+# Log files
 *.log
+*.txt
 
 # Package Files #
 *.jar

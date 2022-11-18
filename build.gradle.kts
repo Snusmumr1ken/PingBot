@@ -4,7 +4,7 @@ plugins {
 }
 
 application {
-    mainClass.set("main.Main")
+    mainClass.set("pingbot.Main")
 }
 
 tasks.withType<JavaCompile> {
