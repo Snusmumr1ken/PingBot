@@ -40,6 +40,7 @@ class PingBot extends Configuration implements Runnable {
 
     // multithreading staff
     Thread t;
+    boolean currentStatus;
     boolean prevStatus;
 
     /**
@@ -91,7 +92,8 @@ class PingBot extends Configuration implements Runnable {
      * Creates new thread and runs it.
      */
     private void pingRoutine() {
-        prevStatus = pingHost(HOST, 80, 5000);
+        currentStatus = pingHost(HOST, 80, 5000);
+        prevStatus = currentStatus;
         t = new Thread(this, "PingThread");
         t.start();
     }
@@ -106,7 +108,6 @@ class PingBot extends Configuration implements Runnable {
      */
     private void processUpdate(Update update) {
         long chatId = update.message().chat().id();
-        boolean availability = pingHost(HOST, PORT, 5000);
 
         loggerWrite("Request from chat id " + chatId + ", from user " + update.message().chat().username());
         // if it is new user
@@ -115,7 +116,7 @@ class PingBot extends Configuration implements Runnable {
             writeInFileId(chatId);
             bot.execute(new SendMessage(chatId, ACCEPT_USER_MESSAGE));
         }
-        bot.execute(new SendMessage(chatId, availability ? AVAILABLE_HOST_MESSAGE : DEAD_HOST_MESSAGE));
+        bot.execute(new SendMessage(chatId, currentStatus ? AVAILABLE_HOST_MESSAGE : DEAD_HOST_MESSAGE));
     }
 
     /**
@@ -204,12 +205,12 @@ class PingBot extends Configuration implements Runnable {
     public void run() {
         loggerWrite("New thread: " + Thread.currentThread() + " works.");
         while (true) {
-            boolean available = pingHost(HOST, PORT, 5000);
+            currentStatus = pingHost(HOST, PORT, 5000);
 
-            if (available != prevStatus) {
-                loggerWrite("Host status changed: " + available);
-                sendUpdateEveryone(available);
-                prevStatus = available;
+            if (currentStatus != prevStatus) {
+                loggerWrite("Host status changed: " + currentStatus);
+                sendUpdateEveryone(currentStatus);
+                prevStatus = currentStatus;
             }
 
             try {
