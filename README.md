@@ -1,11 +1,11 @@
-## PingBot - Telegram bot which checks website availability
+## PingBot - Telegram bot that checks website availability
 
 <a href="https://vshymanskyy.github.io/StandWithUkraine">
 		<img src="https://raw.githubusercontent.com/vshymanskyy/StandWithUkraine/main/banner2-direct.svg">
 	</a>
 
-This bot was created during 2022 Russian invasion of Ukraine. Ukraine faced problems with electricity. Local websites were down a lot.  
-With this bot, people can monitor an availability of a choosen website, for example, learning system of a university.
+This bot was created during the 2022 russian invasion of Ukraine when the country faced problems with electricity and local websites were frequently down.
+With this bot, people can monitor the availability of a chosen website.
 
 ### Usage
 
@@ -19,9 +19,9 @@ With this bot, people can monitor an availability of a choosen website, for exam
 ![usage example](https://user-images.githubusercontent.com/37211863/202767440-ee290149-35dc-4a81-8ae1-d6c1b7e2a65e.png)
 
 ### Bot logic
-1. Initializes logging. Logging is implemented by simple writing in a file.
-2. Processes chat IDs file. Chat ids are needed to write message to users.
-    1. If there is a file, program will parse it. It will save all IDs from a file, in a list.
-    2. If there is no such file, program will create it.
-3. Runs bot listener for updates (user messages). All messages goes there and are procesed by `processUpdate(Update update)` method.
-4. Runs infinite loop in a new thread, which checks for a website availability. If website status changes, all users from a `chatIds` list get an update.
+1. Initializes logging by writing to a file.
+2. Processes a file containing chat IDs that are needed to write messages to users:
+  1. If the file exists, the program parses it and saves all IDs in a list.
+  2. If the file does not exist, the program creates it.
+3. Runs a bot listener for updates (user messages), which processes updates using the processUpdate(Update update) method.
+4. Runs an infinite loop in a new thread that checks the availability of a website. If the website's status changes, all users from the chatIds list receive an update.
