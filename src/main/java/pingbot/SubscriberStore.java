@@ -8,6 +8,8 @@ import java.util.List;
 import java.util.Set;
 
 import static java.nio.file.StandardOpenOption.APPEND;
+import static java.nio.file.StandardCopyOption.ATOMIC_MOVE;
+import static java.nio.file.StandardCopyOption.REPLACE_EXISTING;
 
 final class SubscriberStore {
     private final Path file;
@@ -40,6 +42,29 @@ final class SubscriberStore {
         Files.writeString(file, entry, APPEND);
         needsSeparator = false;
         chatIds.add(chatId);
+        return true;
+    }
+
+    synchronized boolean unsubscribe(long chatId) throws IOException {
+        if (!chatIds.contains(chatId)) {
+            return false;
+        }
+        StringBuilder content = new StringBuilder();
+        for (long id : chatIds) {
+            if (id != chatId) {
+                content.append(id).append('\n');
+            }
+        }
+        Path target = file.toAbsolutePath();
+        Path temporary = Files.createTempFile(target.getParent(), ".chat-ids-", ".tmp");
+        try {
+            Files.writeString(temporary, content);
+            Files.move(temporary, target, ATOMIC_MOVE, REPLACE_EXISTING);
+        } finally {
+            Files.deleteIfExists(temporary);
+        }
+        chatIds.remove(chatId);
+        needsSeparator = false;
         return true;
     }
 

@@ -139,6 +139,7 @@ class PingBotTest {
             assertEquals(List.of(1L, 2L, 2L, 2L, 3L),
                     telegram.messages.stream().map(request -> request.get("chat_id")).toList());
             assertTrue(telegram.messages.stream().allMatch(request -> request.get("text").toString().contains("🔴")));
+            assertEquals(List.of(1L, 2L, 3L), store.snapshot());
         }
     }
 

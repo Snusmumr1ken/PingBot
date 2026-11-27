@@ -1,5 +1,6 @@
 package pingbot;
 
+import com.pengrad.telegrambot.BotUtils;
 import com.pengrad.telegrambot.TelegramBot;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
@@ -11,6 +12,7 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -24,6 +26,7 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Handler;
 import java.util.logging.LogRecord;
 import java.util.logging.Logger;
@@ -156,6 +159,95 @@ class TelegramDeliveryHttpTest {
             assertFalse(warnings.get(0).contains("test-token"));
         } finally {
             logger.removeHandler(capture);
+        }
+    }
+
+    @Test
+    void blockedUsersAreRemovedFromDiskAndQueuedBroadcastsAndCanSubscribeAgain() throws Exception {
+        CountDownLatch releaseBlockedResponse = new CountDownLatch(1);
+        AtomicBoolean blocked = new AtomicBoolean(true);
+        Path file = directory.resolve("ids.txt");
+        SubscriberStore subscribers = new SubscriberStore(file);
+        subscribers.subscribe(123L);
+        subscribers.subscribe(456L);
+        try (TestServer server = new TestServer(request -> {
+            if (request.parameters().get("chat_id").equals("123") && blocked.get()) {
+                releaseBlockedResponse.await(5, TimeUnit.SECONDS);
+                return new Response(403,
+                        "{\"ok\":false,\"error_code\":403,\"description\":\"Forbidden: Bot was blocked by the user\"}");
+            }
+            return success();
+        }); PingBot bot = new PingBot(server.bot, subscribers, "example.com")) {
+            bot.notifySubscribers(false);
+            assertEquals("123", server.nextRequest().parameters().get("chat_id"));
+            bot.notifySubscribers(true);
+            releaseBlockedResponse.countDown();
+
+            Request outage = server.nextRequest();
+            Request recovery = server.nextRequest();
+            assertEquals("456", outage.parameters().get("chat_id"));
+            assertTrue(outage.parameters().get("text").contains("🔴"));
+            assertEquals("456", recovery.parameters().get("chat_id"));
+            assertTrue(recovery.parameters().get("text").contains("🟢"));
+            assertEquals(List.of(456L), subscribers.snapshot());
+            assertEquals(List.of(456L), new SubscriberStore(file).snapshot());
+
+            bot.notifySubscribers(false);
+            assertEquals("456", server.nextRequest().parameters().get("chat_id"));
+            blocked.set(false);
+            bot.processUpdate(BotUtils.parseUpdate("""
+                    {"update_id":2,"message":{"message_id":2,"chat":{"id":123,"type":"private"},"text":"hello"}}
+                    """), true);
+            Request welcome = server.nextRequest();
+            assertEquals("123", welcome.parameters().get("chat_id"));
+            assertTrue(welcome.parameters().get("text").contains("successfully subscribed"));
+            assertEquals(List.of(456L, 123L), new SubscriberStore(file).snapshot());
+        } finally {
+            releaseBlockedResponse.countDown();
+        }
+    }
+
+    @Test
+    void unrelatedForbiddenErrorsAndOtherCodesPreserveSubscribers() throws Exception {
+        List<Response> failures = List.of(
+                new Response(403, "{\"ok\":false,\"error_code\":403,\"description\":\"Forbidden: not enough rights\"}"),
+                new Response(403, "{\"ok\":false,\"error_code\":403}"),
+                new Response(400, "{\"ok\":false,\"error_code\":400,\"description\":\"Forbidden: bot was blocked by the user\"}"));
+        for (int index = 0; index < failures.size(); index++) {
+            Response failure = failures.get(index);
+            Path file = directory.resolve("ids-" + index + ".txt");
+            SubscriberStore subscribers = new SubscriberStore(file);
+            subscribers.subscribe(123L);
+            subscribers.subscribe(456L);
+            try (TestServer server = new TestServer(request -> request.parameters().get("chat_id").equals("123")
+                    ? failure : success()); PingBot bot = new PingBot(server.bot, subscribers, "example.com")) {
+                bot.notifySubscribers(false);
+                assertEquals("123", server.nextRequest().parameters().get("chat_id"));
+                assertEquals("456", server.nextRequest().parameters().get("chat_id"));
+                assertEquals(List.of(123L, 456L), subscribers.snapshot());
+                assertEquals(subscribers.snapshot(), new SubscriberStore(file).snapshot());
+            }
+        }
+    }
+
+    @Test
+    void failedRemovalPreservesSubscribersAndContinuesDeliveryToOtherChats() throws Exception {
+        Path file = directory.resolve("ids.txt");
+        SubscriberStore subscribers = new SubscriberStore(file);
+        subscribers.subscribe(123L);
+        subscribers.subscribe(456L);
+        Path backup = directory.resolve("backup.txt");
+        Files.move(file, backup);
+        Files.createDirectory(file);
+        try (TestServer server = new TestServer(request -> request.parameters().get("chat_id").equals("123")
+                ? new Response(403, "{\"ok\":false,\"error_code\":403,\"description\":\"Forbidden: bot was blocked by the user\"}")
+                : success()); PingBot bot = new PingBot(server.bot, subscribers, "example.com")) {
+            bot.notifySubscribers(false);
+            assertEquals("123", server.nextRequest().parameters().get("chat_id"));
+            assertEquals("456", server.nextRequest().parameters().get("chat_id"));
+            assertEquals(List.of(123L, 456L), subscribers.snapshot());
+            assertEquals("123\n456\n", Files.readString(backup));
+            assertTrue(Files.isDirectory(file));
         }
     }
 
