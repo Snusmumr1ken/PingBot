@@ -9,6 +9,7 @@ application {
 
 tasks.withType<JavaCompile> {
     options.encoding = "UTF-8"
+    options.release.set(17)
 }
 
 group = "org.pingbot"
@@ -19,7 +20,7 @@ repositories {
 }
 
 dependencies {
-    implementation ("com.github.pengrad:java-telegram-bot-api:6.2.0")
+    implementation("com.github.pengrad:java-telegram-bot-api:6.2.0")
     testImplementation("org.junit.jupiter:junit-jupiter-api:5.8.1")
     testRuntimeOnly("org.junit.jupiter:junit-jupiter-engine:5.8.1")
 }
