@@ -4,9 +4,11 @@ import com.pengrad.telegrambot.BotUtils;
 import com.pengrad.telegrambot.Callback;
 import com.pengrad.telegrambot.ExceptionHandler;
 import com.pengrad.telegrambot.TelegramBot;
+import com.pengrad.telegrambot.TelegramException;
 import com.pengrad.telegrambot.UpdatesListener;
 import com.pengrad.telegrambot.model.Update;
 import com.pengrad.telegrambot.request.BaseRequest;
+import com.pengrad.telegrambot.request.GetUpdates;
 import com.pengrad.telegrambot.response.BaseResponse;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -17,6 +19,9 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.logging.Handler;
+import java.util.logging.LogRecord;
+import java.util.logging.Logger;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -33,10 +38,10 @@ class PingBotTest {
             bot.processUpdate(message(123L), false);
 
             assertEquals(List.of(123L), store.snapshot());
-            assertEquals(3, telegram.messages.size());
+            assertEquals(2, telegram.messages.size());
             assertTrue(text(telegram, 0).contains("successfully subscribed"));
-            assertEquals("🟢 - It's alive! - example.com", text(telegram, 1));
-            assertEquals("🔴 - What is dead may never die...", text(telegram, 2));
+            assertTrue(text(telegram, 0).contains("🟢 - It's alive! - example.com"));
+            assertEquals("🔴 - What is dead may never die...", text(telegram, 1));
             assertTrue(telegram.messages.stream().allMatch(request -> request.get("chat_id").equals(123L)));
         }
         assertTrue(telegram.listenerRemoved);
@@ -54,8 +59,48 @@ class PingBotTest {
 
             assertEquals(UpdatesListener.CONFIRMED_UPDATES_ALL, confirmation);
             assertEquals(List.of(123L), store.snapshot());
-            assertEquals(2, telegram.messages.size());
-            assertTrue(text(telegram, 1).contains("It's alive!"));
+            assertEquals(1, telegram.messages.size());
+            assertTrue(text(telegram, 0).contains("It's alive!"));
+            assertEquals(30, telegram.pollingRequest.getTimeoutSeconds());
+            assertArrayEquals(new String[]{"message"},
+                    (String[]) telegram.pollingRequest.getParameters().get("allowed_updates"));
+        }
+    }
+
+    @Test
+    void pollingDiagnosticsExplainApiAndNetworkFailuresWithoutExposingTokens() throws IOException {
+        List<String> warnings = new ArrayList<>();
+        Logger logger = Logger.getLogger(PingBot.class.getName());
+        Handler capture = new Handler() {
+            @Override
+            public void publish(LogRecord record) {
+                warnings.add(record.getMessage());
+            }
+
+            @Override
+            public void flush() {
+            }
+
+            @Override
+            public void close() {
+            }
+        };
+        logger.addHandler(capture);
+        RecordingTelegramBot telegram = new RecordingTelegramBot();
+        try (PingBot bot = new PingBot(telegram,
+                new SubscriberStore(directory.resolve("chat_ids.txt")), "example.com")) {
+            bot.start(() -> true);
+            telegram.exceptionHandler.onException(new TelegramException("API failure", BotUtils.fromJson(
+                    "{\"ok\":false,\"error_code\":409,\"description\":\"Webhook conflict\"}", BaseResponse.class)));
+            telegram.exceptionHandler.onException(new TelegramException(
+                    new IOException("Connection failed at https://api.telegram.org/bottest-token/getUpdates\nretry")));
+
+            assertTrue(warnings.get(0).contains("409: Webhook conflict"));
+            assertTrue(warnings.get(1).contains("IOException: Connection failed"));
+            assertTrue(warnings.get(1).contains("[redacted]"));
+            assertTrue(warnings.stream().noneMatch(warning -> warning.contains("test-token") || warning.contains("\n")));
+        } finally {
+            logger.removeHandler(capture);
         }
     }
 
@@ -116,6 +161,8 @@ class PingBotTest {
     private static final class RecordingTelegramBot extends TelegramBot {
         private final List<Map<String, Object>> messages = new ArrayList<>();
         private UpdatesListener listener;
+        private ExceptionHandler exceptionHandler;
+        private GetUpdates pollingRequest;
         private boolean listenerRemoved;
         private boolean closed;
 
@@ -124,8 +171,10 @@ class PingBotTest {
         }
 
         @Override
-        public void setUpdatesListener(UpdatesListener listener, ExceptionHandler exceptionHandler) {
+        public void setUpdatesListener(UpdatesListener listener, ExceptionHandler exceptionHandler, GetUpdates request) {
             this.listener = listener;
+            this.exceptionHandler = exceptionHandler;
+            this.pollingRequest = request;
         }
 
         @Override

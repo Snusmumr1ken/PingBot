@@ -2,8 +2,10 @@ package pingbot;
 
 import com.pengrad.telegrambot.Callback;
 import com.pengrad.telegrambot.TelegramBot;
+import com.pengrad.telegrambot.TelegramException;
 import com.pengrad.telegrambot.UpdatesListener;
 import com.pengrad.telegrambot.model.Update;
+import com.pengrad.telegrambot.request.GetUpdates;
 import com.pengrad.telegrambot.request.SendMessage;
 import com.pengrad.telegrambot.response.SendResponse;
 
@@ -31,7 +33,8 @@ final class PingBot implements AutoCloseable {
                 processUpdate(update, availability.getAsBoolean());
             }
             return UpdatesListener.CONFIRMED_UPDATES_ALL;
-        }, exception -> LOGGER.warning("Telegram polling failed; the client will retry"));
+        }, exception -> LOGGER.warning(pollingFailure(exception)),
+                new GetUpdates().timeout(30).allowedUpdates("message"));
     }
 
     void processUpdate(Update update, boolean available) {
@@ -40,10 +43,12 @@ final class PingBot implements AutoCloseable {
         }
         long chatId = update.message().chat().id();
         try {
+            String message = statusMessage(available);
             if (subscribers.subscribe(chatId)) {
-                send(chatId, "✅ - Ok, you are successfully subscribed for notifications about availability of " + host);
+                message = "✅ - Ok, you are successfully subscribed for notifications about availability of "
+                        + host + "\n" + message;
             }
-            send(chatId, statusMessage(available));
+            send(chatId, message);
         } catch (IOException e) {
             LOGGER.log(Level.WARNING, "Could not save subscription for chat " + chatId, e);
             send(chatId, "Could not save your subscription. Please try again later.");
@@ -59,6 +64,18 @@ final class PingBot implements AutoCloseable {
 
     private String statusMessage(boolean available) {
         return available ? "🟢 - It's alive! - " + host : "🔴 - What is dead may never die...";
+    }
+
+    private String pollingFailure(TelegramException exception) {
+        String detail;
+        if (exception.response() != null) {
+            detail = exception.response().errorCode() + ": " + exception.response().description();
+        } else {
+            Throwable cause = exception.getCause() == null ? exception : exception.getCause();
+            detail = cause.getClass().getSimpleName() + ": " + cause.getMessage();
+        }
+        return ("Telegram polling failed; the client will retry: " + detail)
+                .replace(bot.getToken(), "[redacted]").replace('\n', ' ').replace('\r', ' ');
     }
 
     private void send(long chatId, String message) {
