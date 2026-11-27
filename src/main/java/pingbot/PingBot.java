@@ -21,8 +21,8 @@ final class PingBot implements AutoCloseable {
 
     PingBot(TelegramBot bot, SubscriberStore subscribers, String host) {
         this.bot = bot;
-        this.delivery = new TelegramDelivery(bot);
         this.subscribers = subscribers;
+        this.delivery = new TelegramDelivery(bot, this::removeBlockedSubscriber);
         this.host = host;
     }
 
@@ -63,6 +63,16 @@ final class PingBot implements AutoCloseable {
 
     private String statusMessage(boolean available) {
         return available ? "🟢 - It's alive! - " + host : "🔴 - What is dead may never die...";
+    }
+
+    private void removeBlockedSubscriber(long chatId) {
+        try {
+            if (subscribers.unsubscribe(chatId)) {
+                LOGGER.info("Removed blocked subscriber " + chatId);
+            }
+        } catch (IOException e) {
+            LOGGER.log(Level.WARNING, "Could not persist removal of blocked subscriber " + chatId, e);
+        }
     }
 
     private String pollingFailure(TelegramException exception) {

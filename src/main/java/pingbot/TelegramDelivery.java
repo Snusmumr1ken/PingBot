@@ -11,6 +11,7 @@ import java.util.Deque;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.function.LongConsumer;
 import java.util.logging.Logger;
 
 final class TelegramDelivery implements AutoCloseable {
@@ -19,6 +20,7 @@ final class TelegramDelivery implements AutoCloseable {
     private static final long MESSAGE_DELAY_MILLIS = 50;
 
     private final TelegramBot bot;
+    private final LongConsumer onBlocked;
     private final long retryDelayMillis;
     private final long shutdownTimeoutMillis;
     private final Deque<Message> messages = new ArrayDeque<>();
@@ -27,12 +29,17 @@ final class TelegramDelivery implements AutoCloseable {
     private boolean closing;
     private boolean closed;
 
-    TelegramDelivery(TelegramBot bot) {
-        this(bot, 1000, 5000);
+    TelegramDelivery(TelegramBot bot, LongConsumer onBlocked) {
+        this(bot, onBlocked, 1000, 5000);
     }
 
     TelegramDelivery(TelegramBot bot, long retryDelayMillis, long shutdownTimeoutMillis) {
+        this(bot, chatId -> {}, retryDelayMillis, shutdownTimeoutMillis);
+    }
+
+    TelegramDelivery(TelegramBot bot, LongConsumer onBlocked, long retryDelayMillis, long shutdownTimeoutMillis) {
         this.bot = bot;
+        this.onBlocked = onBlocked;
         this.retryDelayMillis = retryDelayMillis;
         this.shutdownTimeoutMillis = shutdownTimeoutMillis;
     }
@@ -68,6 +75,10 @@ final class TelegramDelivery implements AutoCloseable {
                         return;
                     }
                     int code = response.errorCode();
+                    if (code == 403 && "Forbidden: bot was blocked by the user".equalsIgnoreCase(response.description())) {
+                        blocked(message);
+                        return;
+                    }
                     Integer retryAfter = response.parameters() == null ? null : response.parameters().retryAfter();
                     long delay = retryAfter != null && retryAfter > 0
                             ? TimeUnit.SECONDS.toMillis(retryAfter) : retryDelayMillis * attempt;
@@ -84,6 +95,19 @@ final class TelegramDelivery implements AutoCloseable {
         } catch (RuntimeException e) {
             failed(message, attempt, false, 0, "Could not queue request: " + e.getClass().getSimpleName());
         }
+    }
+
+    private synchronized void blocked(Message message) {
+        if (closed || messages.peekFirst() != message) {
+            return;
+        }
+        try {
+            onBlocked.accept(message.chatId());
+        } catch (RuntimeException e) {
+            LOGGER.warning("Could not remove blocked chat " + message.chatId() + ": " + e.getClass().getSimpleName());
+        }
+        messages.removeIf(queued -> queued != message && queued.chatId() == message.chatId());
+        complete(message);
     }
 
     private synchronized void failed(Message message, int attempt, boolean retryable, long delayMillis, String detail) {
