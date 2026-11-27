@@ -1,27 +1,58 @@
 package pingbot;
 
-import java.time.format.DateTimeFormatter;
+import java.nio.file.Path;
+import java.util.Map;
 
-public class Configuration {
-    protected final String FILE_NAME_FOR_LOGS = "log.txt";
-    protected final String FILE_NAME_FOR_CHAT_IDS = "chat_ids.txt";
-    protected final String HOST = "website e.g. google.com";
-    protected final String BOT_TOKEN = "telegram bot token from BotFather";
-    // white check mark emoji used
-    protected final String ACCEPT_USER_MESSAGE = "✅ - Ok, you are successfully subscribed for notifications about availability of " + HOST;
-    // green circle emoji used
-    protected final String AVAILABLE_HOST_MESSAGE = "\uD83D\uDFE2 - It's alive! - " + HOST;
-    // reg circle emoji used
-    protected final String DEAD_HOST_MESSAGE = "\uD83D\uDD34 - What is dead may never die...";
+record Configuration(String botToken, String host, int port, long checkIntervalMillis,
+                     int connectTimeoutMillis, Path chatIdsFile) {
+    Configuration {
+        botToken = required("BOT_TOKEN", botToken);
+        host = required("HOST", host);
+        if (host.contains("/") || host.contains("?") || host.contains("#")
+                || host.chars().anyMatch(Character::isWhitespace)) {
+            throw new IllegalArgumentException("HOST must be a hostname or IP address, without a URL scheme or path");
+        }
+        if (port < 1 || port > 65535) {
+            throw new IllegalArgumentException("PORT must be between 1 and 65535");
+        }
+        if (checkIntervalMillis < 1) {
+            throw new IllegalArgumentException("CHECK_INTERVAL_MILLIS must be positive");
+        }
+        if (connectTimeoutMillis < 1) {
+            throw new IllegalArgumentException("CONNECT_TIMEOUT_MILLIS must be positive");
+        }
+    }
 
-    protected final DateTimeFormatter DATE_TIME_FORMATTER = DateTimeFormatter.ofPattern("dd-MM HH:mm:ss");
+    static Configuration fromEnvironment(Map<String, String> environment) {
+        return new Configuration(
+                environment.get("BOT_TOKEN"),
+                environment.get("HOST"),
+                integer(environment, "PORT", "80"),
+                number(environment, "CHECK_INTERVAL_MILLIS", "60000"),
+                integer(environment, "CONNECT_TIMEOUT_MILLIS", "5000"),
+                Path.of(required("CHAT_IDS_FILE", environment.getOrDefault("CHAT_IDS_FILE", "chat_ids.txt"))));
+    }
 
-    protected final int PORT = 80;
+    private static String required(String name, String value) {
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException(name + " is required");
+        }
+        return value.strip();
+    }
 
-    /*  1000 - 1 second
-        5000 - 5 seconds
-       20000 - 20 seconds
-       60000 - 60 seconds
-     */
-    protected final Long SLEEP_TIME_MILLIS = 60000L;
+    private static long number(Map<String, String> environment, String name, String fallback) {
+        try {
+            return Long.parseLong(environment.getOrDefault(name, fallback).strip());
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException(name + " must be a whole number");
+        }
+    }
+
+    private static int integer(Map<String, String> environment, String name, String fallback) {
+        long value = number(environment, name, fallback);
+        if (value < Integer.MIN_VALUE || value > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException(name + " is outside the supported integer range");
+        }
+        return (int) value;
+    }
 }
