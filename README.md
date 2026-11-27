@@ -34,7 +34,7 @@ $env:HOST = "example.com"
 .\gradlew.bat run
 ```
 
-Open your bot in Telegram and send it a message. PingBot saves your chat ID, confirms your subscription, and replies with the latest availability status. Subsequent messages return the latest status, and all subscribed chats receive a notification when the status changes.
+Open your bot in Telegram and send it a message. PingBot saves your chat ID and sends one reply containing your subscription confirmation and the latest availability status. Subsequent messages return the latest status, and all subscribed chats receive a notification when the status changes.
 
 Stop the process with Ctrl+C. Keep your bot token private and out of source control.
 
@@ -70,11 +70,23 @@ The bot validates configuration and loads subscribers before it starts monitorin
 3. When the status changes, it queues a notification for every subscribed chat.
 4. Incoming Telegram messages subscribe new chats and return the status from the latest completed check.
 
-The initial check does not broadcast a notification. Telegram messages are sent asynchronously, so delivery does not block monitoring.
+The initial check does not broadcast a notification. Incoming messages use long polling with a 30-second timeout. Outgoing messages are queued separately, so delivery does not block monitoring.
 
 A successful TCP connection means the port is reachable. It does **not** verify HTTP responses, page content, TLS certificates, or whether a website is working correctly. Checks observe availability from the machine running PingBot.
 
-Notifications are best effort: delivery failures are logged, and failed notifications are not saved for later delivery. A single failed check changes the status immediately; there is no outage threshold or flapping suppression.
+A single failed check changes the status immediately; there is no outage threshold or flapping suppression.
+
+## Message delivery
+
+Messages are sent one at a time, in queue order, with a 50-millisecond pause between messages. A retry delays the messages behind it, so an earlier alert cannot be retried after a later queued alert has been sent.
+
+- Network and response-parsing failures, server errors (`5xx`), and rate limits (`429`) get up to three attempts in total.
+- Retries wait one second, then two seconds, unless Telegram provides a positive `retry_after` value; that delay is respected instead.
+- Permanent API errors, such as forbidden access (`403`), are logged without retrying. Delivery then continues to the next message.
+
+Delivery is best effort. A network timeout can occur after Telegram accepted a message, so retries may produce duplicates. The queue is kept in memory and does not survive a restart.
+
+During shutdown, PingBot stops polling and waits up to five seconds for queued messages and retries to finish. After that deadline, remaining queued work is discarded; a request already in flight may still complete.
 
 ## Subscriber data and logs
 
@@ -84,7 +96,7 @@ The file is created if it does not exist. Its parent directory must already exis
 
 There is no unsubscribe command yet. To remove a subscription, stop the bot, remove the chat ID from the file, and restart it. Run one bot instance per token and subscriber file.
 
-Logs use Java's standard logging and go to standard error. To append them to a file:
+Logs use Java's standard logging and go to standard error. Polling and delivery errors include diagnostic details with the bot token redacted. To append logs to a file:
 
 ```bash
 ./gradlew run 2>>pingbot.log
@@ -100,7 +112,7 @@ Run the tests and build the application:
 ./gradlew build
 ```
 
-Tests cover configuration validation, subscriber persistence and concurrency, status transitions, local TCP checks, and Telegram message handling with a test client. They do not require a real bot token or contact Telegram.
+Tests cover configuration validation, subscriber persistence and concurrency, status transitions, local TCP checks, and Telegram message handling. HTTP integration tests exercise the real Telegram client against a local server, including retry delays, ordering, error diagnostics, and shutdown. Tests do not require a real bot token or contact Telegram.
 
 To generate a runnable installation:
 
@@ -120,4 +132,17 @@ The code stays in a single package with a few focused components:
 | `SubscriberStore` | Load, deduplicate, and persist subscriptions safely across threads. |
 | `AvailabilityMonitor` | Schedule checks and detect status changes. |
 | `PingBot` | Handle Telegram updates and send messages. |
+| `TelegramDelivery` | Queue messages, retry transient failures, and allow a bounded shutdown wait. |
 | `Main` | Assemble the application and register shutdown handling. |
+
+## Manual live check
+
+Use a dedicated test bot and private chat for this check. It requires a real token and a local TCP service you can stop and restart; automated tests cover the same delivery paths without contacting Telegram.
+
+1. Run a local service, such as `python3 -m http.server 8080 --bind 127.0.0.1` if Python 3 is available.
+2. Configure `BOT_TOKEN`, set `HOST=127.0.0.1`, `PORT=8080`, and `CHECK_INTERVAL_MILLIS=1000`, then start PingBot.
+3. Send the bot a message in Telegram and confirm that one reply includes both the subscription confirmation and the available status.
+4. Stop the local service and check that an unavailable notification arrives. Restart the service and check for the available notification.
+5. Restart PingBot and send another message. Your subscription should remain saved, and the reply should contain the current status without another subscription confirmation.
+
+If incoming messages do not arrive, check the polling error log. Telegram requires webhooks to be disabled when using `getUpdates`, and only one instance should poll with the same token.
