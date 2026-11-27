@@ -19,6 +19,8 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeUnit;
 import java.util.logging.Handler;
 import java.util.logging.LogRecord;
 import java.util.logging.Logger;
@@ -30,12 +32,13 @@ class PingBotTest {
     Path directory;
 
     @Test
-    void subscribesOnceAndRepliesWithCurrentStatusOnEveryMessage() throws IOException {
+    void subscribesOnceAndRepliesWithCurrentStatusOnEveryMessage() throws Exception {
         SubscriberStore store = new SubscriberStore(directory.resolve("chat_ids.txt"));
         RecordingTelegramBot telegram = new RecordingTelegramBot();
         try (PingBot bot = new PingBot(telegram, store, "example.com")) {
             bot.processUpdate(message(123L), true);
             bot.processUpdate(message(123L), false);
+            telegram.awaitMessages(2);
 
             assertEquals(List.of(123L), store.snapshot());
             assertEquals(2, telegram.messages.size());
@@ -49,13 +52,14 @@ class PingBotTest {
     }
 
     @Test
-    void ignoresUpdatesWithoutMessagesAndAcknowledgesTheBatch() throws IOException {
+    void ignoresUpdatesWithoutMessagesAndAcknowledgesTheBatch() throws Exception {
         SubscriberStore store = new SubscriberStore(directory.resolve("chat_ids.txt"));
         RecordingTelegramBot telegram = new RecordingTelegramBot();
         try (PingBot bot = new PingBot(telegram, store, "example.com")) {
             bot.start(() -> true);
             int confirmation = telegram.listener.process(List.of(
                     BotUtils.parseUpdate("{\"update_id\":1}"), message(123L)));
+            telegram.awaitMessages(1);
 
             assertEquals(UpdatesListener.CONFIRMED_UPDATES_ALL, confirmation);
             assertEquals(List.of(123L), store.snapshot());
@@ -105,7 +109,7 @@ class PingBotTest {
     }
 
     @Test
-    void reportsPersistenceFailureWithoutClaimingSubscriptionSucceeded() throws IOException {
+    void reportsPersistenceFailureWithoutClaimingSubscriptionSucceeded() throws Exception {
         Path file = directory.resolve("chat_ids.txt");
         SubscriberStore store = new SubscriberStore(file);
         Files.delete(file);
@@ -113,6 +117,7 @@ class PingBotTest {
         RecordingTelegramBot telegram = new RecordingTelegramBot();
         try (PingBot bot = new PingBot(telegram, store, "example.com")) {
             bot.processUpdate(message(123L), true);
+            telegram.awaitMessages(1);
 
             assertTrue(store.snapshot().isEmpty());
             assertEquals(1, telegram.messages.size());
@@ -121,7 +126,7 @@ class PingBotTest {
     }
 
     @Test
-    void broadcastsToAllSubscribersDespiteRejectedOrFailedDeliveries() throws IOException {
+    void broadcastsToAllSubscribersDespiteRejectedOrFailedDeliveries() throws Exception {
         SubscriberStore store = new SubscriberStore(directory.resolve("chat_ids.txt"));
         store.subscribe(1L);
         store.subscribe(2L);
@@ -129,21 +134,23 @@ class PingBotTest {
         RecordingTelegramBot telegram = new RecordingTelegramBot();
         try (PingBot bot = new PingBot(telegram, store, "example.com")) {
             bot.notifySubscribers(false);
+            telegram.awaitMessages(5);
 
-            assertEquals(List.of(1L, 2L, 3L),
+            assertEquals(List.of(1L, 2L, 2L, 2L, 3L),
                     telegram.messages.stream().map(request -> request.get("chat_id")).toList());
             assertTrue(telegram.messages.stream().allMatch(request -> request.get("text").toString().contains("🔴")));
         }
     }
 
     @Test
-    void continuesBroadcastWhenARequestCannotBeQueued() throws IOException {
+    void continuesBroadcastWhenARequestCannotBeQueued() throws Exception {
         SubscriberStore store = new SubscriberStore(directory.resolve("chat_ids.txt"));
         store.subscribe(4L);
         store.subscribe(5L);
         RecordingTelegramBot telegram = new RecordingTelegramBot();
         try (PingBot bot = new PingBot(telegram, store, "example.com")) {
             assertDoesNotThrow(() -> bot.notifySubscribers(true));
+            telegram.awaitMessages(2);
             assertEquals(2, telegram.messages.size());
         }
     }
@@ -159,7 +166,7 @@ class PingBotTest {
     }
 
     private static final class RecordingTelegramBot extends TelegramBot {
-        private final List<Map<String, Object>> messages = new ArrayList<>();
+        private final List<Map<String, Object>> messages = new CopyOnWriteArrayList<>();
         private UpdatesListener listener;
         private ExceptionHandler exceptionHandler;
         private GetUpdates pollingRequest;
@@ -170,6 +177,15 @@ class PingBotTest {
             super("test-token");
         }
 
+        synchronized void awaitMessages(int count) throws InterruptedException {
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (messages.size() < count) {
+                long remaining = deadline - System.nanoTime();
+                assertTrue(remaining > 0, "Timed out waiting for Telegram requests");
+                TimeUnit.NANOSECONDS.timedWait(this, remaining);
+            }
+        }
+
         @Override
         public void setUpdatesListener(UpdatesListener listener, ExceptionHandler exceptionHandler, GetUpdates request) {
             this.listener = listener;
@@ -178,8 +194,9 @@ class PingBotTest {
         }
 
         @Override
-        public <T extends BaseRequest<T, R>, R extends BaseResponse> void execute(T request, Callback<T, R> callback) {
+        public synchronized <T extends BaseRequest<T, R>, R extends BaseResponse> void execute(T request, Callback<T, R> callback) {
             messages.add(Map.copyOf(request.getParameters()));
+            notifyAll();
             long chatId = (Long) request.getParameters().get("chat_id");
             if (chatId == 4L) {
                 throw new IllegalStateException("test queue failure");
