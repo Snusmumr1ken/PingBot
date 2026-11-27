@@ -92,6 +92,10 @@ During shutdown, PingBot stops polling and waits up to five seconds for queued m
 
 Chat IDs are stored as plain numbers in `chat_ids.txt`, one per line for new subscriptions. Existing files remain compatible, including whitespace-separated IDs and duplicate entries; each chat receives one notification per transition. Invalid entries stop startup so they can be corrected.
 
+When a send receives Telegram's explicit blocked-user response, PingBot removes that chat ID from memory and the subscriber file and discards its remaining queued messages. Users can subscribe again by unblocking the bot and sending a new message. Other permission errors and temporary delivery failures leave subscriptions unchanged.
+
+Removal replaces the subscriber file atomically before updating memory. If the file cannot be updated, PingBot logs the failure, keeps the subscription, and continues delivering to other chats.
+
 The file is created if it does not exist. Its parent directory must already exist and be writable. Keep this file on persistent storage if you want subscriptions to survive redeployment.
 
 There is no unsubscribe command yet. To remove a subscription, stop the bot, remove the chat ID from the file, and restart it. Run one bot instance per token and subscriber file.
@@ -112,7 +116,7 @@ Run the tests and build the application:
 ./gradlew build
 ```
 
-Tests cover configuration validation, subscriber persistence and concurrency, status transitions, local TCP checks, and Telegram message handling. HTTP integration tests exercise the real Telegram client against a local server, including retry delays, ordering, error diagnostics, and shutdown. Tests do not require a real bot token or contact Telegram.
+Tests cover configuration validation, subscriber persistence and concurrency, status transitions, local TCP checks, and Telegram message handling. HTTP integration tests exercise the real Telegram client against a local server, including retry delays, ordering, blocked-user removal, error diagnostics, and shutdown. Tests do not require a real bot token or contact Telegram.
 
 To generate a runnable installation:
 
@@ -144,5 +148,6 @@ Use a dedicated test bot and private chat for this check. It requires a real tok
 3. Send the bot a message in Telegram and confirm that one reply includes both the subscription confirmation and the available status.
 4. Stop the local service and check that an unavailable notification arrives. Restart the service and check for the available notification.
 5. Restart PingBot and send another message. Your subscription should remain saved, and the reply should contain the current status without another subscription confirmation.
+6. Block the bot and trigger another status change. Confirm that your chat ID is removed from the subscriber file, then unblock the bot and send a message to subscribe again.
 
 If incoming messages do not arrive, check the polling error log. Telegram requires webhooks to be disabled when using `getUpdates`, and only one instance should poll with the same token.
